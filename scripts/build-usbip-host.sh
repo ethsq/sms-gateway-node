@@ -43,13 +43,25 @@ fi
 
 # ---- apply patches -----------------------------------------------
 log "Applying patches from $PATCH_DIR"
+PATCH_COUNT=0
 for p in "$PATCH_DIR"/*.patch; do
   [[ -f "$p" ]] || continue
-  log "  $(basename "$p")"
-  git -C "$DEST_DIR" apply --check "$p" 2>/dev/null \
-    && git -C "$DEST_DIR" apply "$p" \
-    || log "  ↳ already applied or conflict – skipping"
+  PATCH_NAME="$(basename "$p")"
+  PATCH_COUNT=$((PATCH_COUNT + 1))
+  log "  $PATCH_NAME"
+  if git -C "$DEST_DIR" apply --check "$p" 2>/dev/null; then
+    git -C "$DEST_DIR" apply "$p" \
+      || die "Failed to apply patch: $PATCH_NAME"
+  elif git -C "$DEST_DIR" apply --reverse --check "$p" 2>/dev/null; then
+    log "  ↳ already applied"
+  else
+    die "Patch cannot be applied (conflict): $PATCH_NAME"
+  fi
 done
+if [[ "$PATCH_COUNT" -eq 0 ]]; then
+  die "No patches found in $PATCH_DIR – expected at least 2"
+fi
+log "Applied/verified $PATCH_COUNT patches"
 
 # ---- build --------------------------------------------------------
 log "Building release binary …"
@@ -57,7 +69,10 @@ log "Building release binary …"
 
 BINARY="$DEST_DIR/target/release/examples/host"
 if [[ -x "$BINARY" ]]; then
-  log "✅ Built successfully: $BINARY"
+  # Record patch fingerprint so bridge-up can verify
+  FINGERPRINT="$(cd "$DEST_DIR" && git diff HEAD | md5 -q 2>/dev/null || git diff HEAD | md5sum | cut -d' ' -f1)"
+  printf '%s\n' "$FINGERPRINT" > "${BINARY}.patches-md5"
+  log "✅ Built successfully: $BINARY (patches-md5: $FINGERPRINT)"
 else
   die "Binary not found at $BINARY"
 fi

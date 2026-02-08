@@ -34,13 +34,22 @@ vm_has_modem() {
 require_cmd docker
 require_cmd lsof
 
-if [[ ! -x "$USBIP_HOST_BIN" ]]; then
-  log "USB/IP host binary not found – building with patches …"
-  USBIP_REPO="${USBIP_HOST_BIN%/target/release/examples/host}"
-  "${ROOT_DIR}/scripts/build-usbip-host.sh" "$USBIP_REPO"
+# ---- ensure patched binary exists ---------------------------------
+rebuild_usbip() {
+  log "Building patched USB/IP host binary …"
+  local repo="${USBIP_HOST_BIN%/target/release/examples/host}"
+  "${ROOT_DIR}/scripts/build-usbip-host.sh" "$repo"
   if [[ ! -x "$USBIP_HOST_BIN" ]]; then
     die "Build failed – binary still missing at $USBIP_HOST_BIN"
   fi
+}
+
+if [[ ! -x "$USBIP_HOST_BIN" ]]; then
+  log "USB/IP host binary not found"
+  rebuild_usbip
+elif [[ ! -f "${USBIP_HOST_BIN}.patches-md5" ]]; then
+  log "⚠️  Binary exists but has no patch fingerprint – rebuilding to ensure patches are applied"
+  rebuild_usbip
 fi
 
 log "1/6 ensure USB/IP host server listens on tcp/3240"

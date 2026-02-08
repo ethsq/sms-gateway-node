@@ -24,6 +24,8 @@ class SIM7600 {
         this.reconnectTimer = null;
         this.initialized = false;
         this.processingIndices = new Set(); // dedup in-flight CMTI
+        this._probeInFlight = false;
+        this._probeFailures = 0;
     }
 
     // ── lifecycle ────────────────────────────────────────────────
@@ -139,6 +141,7 @@ class SIM7600 {
     startReader() {
         if (this.readerRunning) return;
         this.readerRunning = true;
+        this.consecutiveZlp = 0;
         console.log('📡 USB reader started');
 
         const read = () => {
@@ -152,11 +155,16 @@ class SIM7600 {
                     return;
                 }
                 if (data && data.length > 0) {
+                    this.consecutiveZlp = 0;
                     this.handleData(data.toString('utf8'));
+                } else {
+                    this.consecutiveZlp++;
                 }
-                // 1ms throttle: prevents flooding the USB/IP bridge's
-                // sequential handler with back-to-back bulk-IN ZLPs.
-                if (this.connected) setTimeout(read, 1);
+                // Adaptive throttle: 1 ms while active or awaiting response,
+                // backs off to 10 ms after 50 consecutive zero-length packets
+                // to reduce idle CPU / bridge load.
+                const delay = (this.pendingCommand || this.consecutiveZlp < 50) ? 1 : 10;
+                if (this.connected) setTimeout(read, delay);
             });
         };
         read();
@@ -244,8 +252,58 @@ class SIM7600 {
             this.responseBuffer = '';
             this.pendingCommand = null;
             console.warn(`⚠️ AT timeout: ${cmd}`);
+            // Probe: send bare AT to check if bridge / modem is still alive.
+            // If probe also fails, trigger reconnect instead of silently degrading.
+            this._probeConnectivity();
             done(resolve, response || 'TIMEOUT');
         }, timeout);
+    }
+
+    /**
+     * After an AT timeout, fire a lightweight probe to distinguish
+     * "modem busy" from "bridge dead".  Two consecutive probe failures
+     * trigger disconnect + reconnect.
+     */
+    _probeConnectivity() {
+        if (this._probeInFlight || !this.connected) return;
+        this._probeInFlight = true;
+        this._probeFailures = (this._probeFailures || 0);
+
+        const probeTimeout = setTimeout(() => {
+            this._probeInFlight = false;
+            this._probeFailures++;
+            console.warn(`⚠️ Connectivity probe failed (${this._probeFailures}/2)`);
+            if (this._probeFailures >= 2) {
+                console.error('❌ Bridge appears dead – forcing reconnect');
+                this._probeFailures = 0;
+                this.disconnect();
+                this.scheduleReconnect();
+            }
+        }, 3000);
+
+        // Temporarily hijack the pending slot for the probe
+        const prevPending = this.pendingCommand;
+        this.pendingCommand = {
+            resolve: () => {
+                clearTimeout(probeTimeout);
+                this._probeInFlight = false;
+                this._probeFailures = 0;
+                this.pendingCommand = prevPending;
+            },
+            reject: () => {
+                clearTimeout(probeTimeout);
+                this._probeInFlight = false;
+                this.pendingCommand = prevPending;
+            }
+        };
+        this.responseBuffer = '';
+        this.epOut.transfer(Buffer.from('AT\r\n'), (err) => {
+            if (err) {
+                clearTimeout(probeTimeout);
+                this._probeInFlight = false;
+                this.pendingCommand = prevPending;
+            }
+        });
     }
 
     // ── SMS operations ──────────────────────────────────────────
