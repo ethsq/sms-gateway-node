@@ -22,6 +22,7 @@ class SIM7600 {
         this.processing = false;
         this.reconnecting = false;
         this.reconnectTimer = null;
+        this.initialized = false;
         this.processingIndices = new Set(); // dedup in-flight CMTI
     }
 
@@ -73,11 +74,13 @@ class SIM7600 {
         // This avoids multi-line +CMT URCs that have no end-of-message delimiter.
         await this.sendCommand('AT+CNMI=2,1,0,0,0');
 
+        this.initialized = true;
         console.log('✅ Modem initialized');
     }
 
     disconnect() {
         this.connected = false;
+        this.initialized = false;
         this.readerRunning = false;
         if (this.pendingCommand) {
             try { this.pendingCommand.reject(new Error('Disconnected')); } catch (e) {}
@@ -136,7 +139,7 @@ class SIM7600 {
     startReader() {
         if (this.readerRunning) return;
         this.readerRunning = true;
-        console.log('📡 Single reader started');
+        console.log('📡 USB reader started');
 
         const read = () => {
             if (!this.connected) { this.readerRunning = false; return; }
@@ -148,8 +151,12 @@ class SIM7600 {
                     this.scheduleReconnect();
                     return;
                 }
-                if (data && data.length > 0) this.handleData(data.toString('utf8'));
-                if (this.connected) setImmediate(read);
+                if (data && data.length > 0) {
+                    this.handleData(data.toString('utf8'));
+                }
+                // 1ms throttle: prevents flooding the USB/IP bridge's
+                // sequential handler with back-to-back bulk-IN ZLPs.
+                if (this.connected) setTimeout(read, 1);
             });
         };
         read();
@@ -236,6 +243,7 @@ class SIM7600 {
             const response = this.responseBuffer.trim();
             this.responseBuffer = '';
             this.pendingCommand = null;
+            console.warn(`⚠️ AT timeout: ${cmd}`);
             done(resolve, response || 'TIMEOUT');
         }, timeout);
     }

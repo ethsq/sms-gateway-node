@@ -24,7 +24,7 @@ function setupWebSocket(server, modem, apiKey) {
         ws.send(JSON.stringify({ type: 'connected', timestamp: new Date().toISOString() }));
 
         // Send all existing SMS on SIM card to the new client
-        if (modem.connected) {
+        if (modem.connected && modem.initialized) {
             try {
                 const messages = await modem.readSMS();
                 if (messages.length > 0) {
