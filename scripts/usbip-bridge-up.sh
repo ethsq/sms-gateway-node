@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT_DIR="${SMS_API_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." 2>/dev/null && pwd)}"
 
 USBIP_HOST_BIN="${USBIP_HOST_BIN:-/tmp/usbip/target/release/examples/host}"
 USBIP_REMOTE_HOST="${USBIP_REMOTE_HOST:-host.docker.internal}"
@@ -55,7 +55,7 @@ fi
 log "1/6 ensure USB/IP host server listens on tcp/3240"
 if ! lsof -nP -iTCP:3240 -sTCP:LISTEN >/dev/null 2>&1; then
   nohup "$USBIP_HOST_BIN" >/tmp/usbip-host.log 2>&1 &
-  sleep 1
+  sleep 3
 fi
 if ! lsof -nP -iTCP:3240 -sTCP:LISTEN >/dev/null 2>&1; then
   die "USB/IP host server is not listening on tcp/3240"
