@@ -52,6 +52,8 @@ class SIM7600 {
         this.processing = false;
         this.reconnecting = false;
         this.reconnectTimer = null;
+        this.urcBuffer = '';
+        this.urcTimer = null;
     }
 
     async connect() {
@@ -169,7 +171,27 @@ class SIM7600 {
             }
             return;
         }
-        this.handleURC(text);
+
+        // Buffer URC data — multi-line URCs like +CMT arrive across
+        // multiple USB reads, so we accumulate and flush after a short pause.
+        this.urcBuffer += text;
+        if (this.urcTimer) clearTimeout(this.urcTimer);
+        this.urcTimer = setTimeout(() => {
+            const buffered = this.urcBuffer;
+            this.urcBuffer = '';
+            this.urcTimer = null;
+            if (buffered.trim()) this.handleURC(buffered);
+        }, 200);
+    }
+
+    flushUrcBuffer() {
+        if (this.urcTimer) clearTimeout(this.urcTimer);
+        if (this.urcBuffer.trim()) {
+            const buffered = this.urcBuffer;
+            this.urcBuffer = '';
+            this.urcTimer = null;
+            this.handleURC(buffered);
+        }
     }
 
     handleURC(text) {
@@ -205,6 +227,7 @@ class SIM7600 {
     processQueue() {
         if (this.processing || this.commandQueue.length === 0) return;
         this.processing = true;
+        this.flushUrcBuffer();
 
         const { cmd, timeout, resolve, reject } = this.commandQueue.shift();
         this.responseBuffer = '';
