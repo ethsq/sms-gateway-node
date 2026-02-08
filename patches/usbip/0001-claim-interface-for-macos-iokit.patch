@@ -1,0 +1,33 @@
+From: SMS-API maintainer
+Subject: [PATCH 1/2] claim_interface after set_auto_detach_kernel_driver (macOS IOKit)
+
+On macOS the IOKit USB backend requires the interface to be claimed
+before bulk or interrupt I/O will work.  Without the claim, read_bulk
+silently returns 0 bytes and the modem appears unresponsive.
+
+Upstream: https://github.com/jiegec/usbip  v0.8.0 (0878920)
+---
+ src/lib.rs | 7 ++++++-
+ 1 file changed, 6 insertions(+), 1 deletion(-)
+
+diff --git a/src/lib.rs b/src/lib.rs
+index b9fae1a..1a2c3e4 100644
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -204,11 +204,16 @@ impl UsbIpServer {
+             for intf in cfg.interfaces() {
+                 // ignore alternate settings
+                 let intf_desc = intf.descriptors().next().unwrap();
++                let intf_num = intf_desc.interface_number();
+                 handle
+                     .lock()
+                     .unwrap()
+                     .set_auto_detach_kernel_driver(true)
+                     .ok();
++                // Claim the interface so bulk/interrupt I/O works (required on macOS IOKit)
++                if let Err(e) = handle.lock().unwrap().claim_interface(intf_num) {
++                    warn!("Failed to claim interface {intf_num}: {e}");
++                }
+                 let mut endpoints = vec![];
+ 
+                 for ep_desc in intf_desc.endpoint_descriptors() {

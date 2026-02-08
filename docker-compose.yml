@@ -1,0 +1,31 @@
+services:
+  sms-api:
+    build: .
+    container_name: sms-api
+    devices:
+      - "/dev/bus/usb:/dev/bus/usb"
+    cap_add:
+      - SYS_RAWIO
+    restart: unless-stopped
+    environment:
+      - PORT=3000
+      - API_KEY=${API_KEY}
+    networks:
+      - sms-net
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: sms-cloudflared
+    restart: unless-stopped
+    command: tunnel --config /etc/cloudflared/config.yml run
+    volumes:
+      - ./cloudflared-config.yml:/etc/cloudflared/config.yml:ro
+      - ~/.cloudflared/e04e49e9-4be9-4fa4-b80f-dca7bdd0b7ec.json:/etc/cloudflared/credentials.json:ro
+    depends_on:
+      - sms-api
+    networks:
+      - sms-net
+
+networks:
+  sms-net:
+    driver: bridge

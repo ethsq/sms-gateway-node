@@ -1,0 +1,47 @@
+From: SMS-API maintainer
+Subject: [PATCH 2/2] reduce bulk/interrupt IN read timeout to 10 ms
+
+The sequential handler loop in handle_urb processes one USB/IP command
+at a time.  With the original 1-second timeout on blocking bulk IN
+reads, OUT writes (e.g. AT commands) are starved until the read times
+out.  Reducing the IN timeout to 10 ms lets the loop round-trip quickly
+enough for bidirectional serial communication.
+
+Upstream: https://github.com/jiegec/usbip  v0.8.0 (0878920)
+---
+ src/host.rs | 7 +++++--
+ 1 file changed, 5 insertions(+), 2 deletions(-)
+
+diff --git a/src/host.rs b/src/host.rs
+index d95f715..f8ed9d0 100644
+--- a/src/host.rs
++++ b/src/host.rs
+@@ -25,7 +25,10 @@ impl UsbInterfaceHandler for RusbUsbHostInterfaceHandler {
+     ) -> Result<Vec<u8>> {
+         debug!("To host device: ep={ep:?} setup={setup:?} req={req:?}",);
+         let mut buffer = vec![0u8; transfer_buffer_length as usize];
++        // Use a short timeout for IN reads so the sequential handler loop
++        // doesn't starve OUT writes.  Control and OUT keep 1 s.
+         let timeout = std::time::Duration::new(1, 0);
++        let fast_timeout = std::time::Duration::from_millis(10);
+         let handle = self.handle.lock().unwrap();
+         if ep.attributes == EndpointAttributes::Control as u8 {
+             // control
+@@ -58,7 +61,7 @@ impl UsbInterfaceHandler for RusbUsbHostInterfaceHandler {
+             // interrupt
+             if let Direction::In = ep.direction() {
+                 // interrupt in
+-                if let Ok(len) = handle.read_interrupt(ep.address, &mut buffer, timeout) {
++                if let Ok(len) = handle.read_interrupt(ep.address, &mut buffer, fast_timeout) {
+                     info!("intr in {:?}", &buffer[..len]);
+                     return Ok(Vec::from(&buffer[..len]));
+                 }
+@@ -70,7 +73,7 @@ impl UsbInterfaceHandler for RusbUsbHostInterfaceHandler {
+             // bulk
+             if let Direction::In = ep.direction() {
+                 // bulk in
+-                if let Ok(len) = handle.read_bulk(ep.address, &mut buffer, timeout) {
++                if let Ok(len) = handle.read_bulk(ep.address, &mut buffer, fast_timeout) {
+                     return Ok(Vec::from(&buffer[..len]));
+                 }
+             } else {

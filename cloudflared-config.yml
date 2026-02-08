@@ -1,0 +1,11 @@
+tunnel: e04e49e9-4be9-4fa4-b80f-dca7bdd0b7ec
+credentials-file: /etc/cloudflared/credentials.json
+
+originRequest:
+  connectTimeout: 30s
+  keepAliveTimeout: 90s
+
+ingress:
+  - hostname: sms.backvision.net
+    service: http://sms-api:3000
+  - service: http_status:404
