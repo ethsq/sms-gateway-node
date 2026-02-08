@@ -24,6 +24,7 @@ WORKDIR /app
 
 COPY --from=builder /app/node_modules ./node_modules
 COPY package.json server.js ./
+COPY src/ ./src/
 
 ENV PORT=3000
 EXPOSE 3000
