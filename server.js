@@ -52,8 +52,6 @@ class SIM7600 {
         this.processing = false;
         this.reconnecting = false;
         this.reconnectTimer = null;
-        this.urcBuffer = '';
-        this.urcTimer = null;
     }
 
     async connect() {
@@ -106,7 +104,9 @@ class SIM7600 {
         await this.sendCommand('ATE0');
         await this.sendCommand('AT+CMGF=1');
         await this.sendCommand('AT+CSCS="GSM"');
-        await this.sendCommand('AT+CNMI=2,2,0,0,0');
+        // CNMI=2,1: store SMS on SIM, deliver +CMTI notification only.
+        // This avoids multi-line +CMT URCs that have no end-of-message delimiter.
+        await this.sendCommand('AT+CNMI=2,1,0,0,0');
 
         console.log('✅ Modem initialized');
     }
@@ -153,17 +153,14 @@ class SIM7600 {
                 let response = this.responseBuffer.trim();
                 this.responseBuffer = '';
 
-                // Extract URCs embedded in command response
+                // Extract +CMTI URCs that arrived during a command response
                 const cmtiRegex = /\+CMTI:\s*"[^"]*",\s*\d+/g;
-                const cmtRegex = /\+CMT:\s*"[^"]*",[^\n]*\n[^\n]+/g;
-                for (const regex of [cmtiRegex, cmtRegex]) {
-                    let match;
-                    while ((match = regex.exec(response)) !== null) {
-                        const urc = match[0];
-                        setImmediate(() => this.handleURC(urc));
-                    }
-                    response = response.replace(regex, '');
+                let match;
+                while ((match = cmtiRegex.exec(response)) !== null) {
+                    const urc = match[0];
+                    setImmediate(() => this.handleURC(urc));
                 }
+                response = response.replace(cmtiRegex, '');
 
                 const pending = this.pendingCommand;
                 this.pendingCommand = null;
@@ -171,49 +168,18 @@ class SIM7600 {
             }
             return;
         }
-
-        // Buffer URC data — multi-line URCs like +CMT arrive across
-        // multiple USB reads, so we accumulate and flush after a short pause.
-        this.urcBuffer += text;
-        if (this.urcTimer) clearTimeout(this.urcTimer);
-        this.urcTimer = setTimeout(() => {
-            const buffered = this.urcBuffer;
-            this.urcBuffer = '';
-            this.urcTimer = null;
-            if (buffered.trim()) this.handleURC(buffered);
-        }, 200);
-    }
-
-    flushUrcBuffer() {
-        if (this.urcTimer) clearTimeout(this.urcTimer);
-        if (this.urcBuffer.trim()) {
-            const buffered = this.urcBuffer;
-            this.urcBuffer = '';
-            this.urcTimer = null;
-            this.handleURC(buffered);
-        }
+        this.handleURC(text);
     }
 
     handleURC(text) {
-        // +CMT direct delivery: +CMT: "<sender>",,"<timestamp>"\r\n<message>
-        const cmtMatch = text.match(/\+CMT:\s*"([^"]*)",[^\n]*\n([\s\S]+)/);
-        if (cmtMatch) {
-            const sender = cmtMatch[1];
-            const content = cmtMatch[2].trim();
-            console.log(`📩 NEW SMS (direct) from ${sender}: ${content.substring(0, 50)}`);
-            const sms = { index: null, status: 'REC UNREAD', sender, content };
-            this.notify({ type: 'new_sms', timestamp: new Date().toISOString(), sms });
-            return;
-        }
-
-        // +CMTI fallback: +CMTI: "<storage>",<index>
+        // +CMTI: "<storage>",<index>  — single-line, deterministic
         const cmtiMatch = text.match(/\+CMTI:\s*"(\w+)",\s*(\d+)/);
         if (cmtiMatch) {
             const [, storage, index] = cmtiMatch;
-            console.log(`📩 NEW SMS! Index: ${index}`);
-            this.readSingleSMS(index).then(sms => {
-                if (sms) this.notify({ type: 'new_sms', timestamp: new Date().toISOString(), sms });
-            }).catch(err => console.error('Error reading SMS:', err));
+            console.log(`📩 NEW SMS notification: storage=${storage} index=${index}`);
+            this.readAndDeleteSMS(index).catch(err =>
+                console.error(`Error processing SMS index ${index}:`, err)
+            );
         }
     }
 
@@ -227,7 +193,6 @@ class SIM7600 {
     processQueue() {
         if (this.processing || this.commandQueue.length === 0) return;
         this.processing = true;
-        this.flushUrcBuffer();
 
         const { cmd, timeout, resolve, reject } = this.commandQueue.shift();
         this.responseBuffer = '';
@@ -259,6 +224,15 @@ class SIM7600 {
         }, timeout);
     }
 
+    async readAndDeleteSMS(index) {
+        const sms = await this.readSingleSMS(index);
+        if (sms) {
+            this.notify({ type: 'new_sms', timestamp: new Date().toISOString(), sms });
+            // Delete from SIM to prevent storage from filling up (30 slots)
+            await this.sendCommand(`AT+CMGD=${index}`, 5000);
+        }
+    }
+
     async readSingleSMS(index) {
         const response = await this.sendCommand(`AT+CMGR=${index}`, 5000);
         const lines = response.split('\n');
@@ -266,11 +240,18 @@ class SIM7600 {
             const line = lines[i].trim();
             if (line.startsWith('+CMGR:')) {
                 const parts = line.split(',');
+                // Collect ALL remaining lines as message content (multi-line SMS)
+                const bodyLines = [];
+                for (let j = i + 1; j < lines.length; j++) {
+                    const bl = lines[j].trim();
+                    if (bl === 'OK' || bl === '') continue;
+                    bodyLines.push(bl);
+                }
                 return {
                     index,
                     status: parts[0].replace('+CMGR: ', '').replace(/"/g, ''),
                     sender: parts.length >= 2 ? parts[1].replace(/"/g, '') : 'Unknown',
-                    content: i + 1 < lines.length ? lines[i + 1].trim() : ''
+                    content: bodyLines.join('\n')
                 };
             }
         }
