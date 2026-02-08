@@ -66,7 +66,7 @@ class SIM7600 {
         await this.sendCommand('AT');
         await this.sendCommand('ATE0');
         await this.sendCommand('AT+CMGF=1');
-        await this.sendCommand('AT+CSCS="GSM"');
+        await this.sendCommand('AT+CSCS="UCS2"');
         // CNMI=2,1: store SMS on SIM, deliver +CMTI notification only.
         // This avoids multi-line +CMT URCs that have no end-of-message delimiter.
         await this.sendCommand('AT+CNMI=2,1,0,0,0');
@@ -261,11 +261,13 @@ class SIM7600 {
                     if (bl === 'OK' || bl === '') continue;
                     bodyLines.push(bl);
                 }
+                const rawStatus = parts[0].replace('+CMGR: ', '').replace(/"/g, '').trim();
+                const rawSender = parts.length >= 2 ? parts[1].replace(/"/g, '').trim() : '';
                 return {
                     index,
-                    status: parts[0].replace('+CMGR: ', '').replace(/"/g, ''),
-                    sender: parts.length >= 2 ? parts[1].replace(/"/g, '') : 'Unknown',
-                    content: bodyLines.join('\n')
+                    status: this.decodeUCS2(rawStatus),
+                    sender: this.decodeUCS2(rawSender) || 'Unknown',
+                    content: this.decodeUCS2(bodyLines.join(''))
                 };
             }
         }
@@ -311,7 +313,7 @@ class SIM7600 {
                         this.responseBuffer = '';
                         this.pendingCommand = cmdHandler;
                         this.epOut.transfer(
-                            Buffer.concat([Buffer.from(message), Buffer.from([0x1A])]),
+                            Buffer.concat([Buffer.from(this.encodeUCS2(message)), Buffer.from([0x1A])]),
                             (err) => {
                                 if (err) {
                                     clearTimeout(promptTimer);
@@ -346,7 +348,7 @@ class SIM7600 {
             };
             this.pendingCommand = cmdHandler;
 
-            this.epOut.transfer(Buffer.from(`AT+CMGS="${phone}"\r`), (err) => {
+            this.epOut.transfer(Buffer.from(`AT+CMGS="${this.encodeUCS2(phone)}"\r`), (err) => {
                 if (err) {
                     clearTimeout(promptTimer);
                     if (submitTimer) clearTimeout(submitTimer);
@@ -357,7 +359,7 @@ class SIM7600 {
     }
 
     async readSMS() {
-        const response = await this.sendCommand('AT+CMGL="ALL"', 10000);
+        const response = await this.sendCommand(`AT+CMGL="${this.encodeUCS2('ALL')}"`, 10000);
         const messages = [];
         const lines = response.split('\n');
         for (let i = 0; i < lines.length; i++) {
@@ -365,11 +367,12 @@ class SIM7600 {
             if (line.startsWith('+CMGL:')) {
                 const parts = line.split(',');
                 if (parts.length >= 3) {
+                    const rawContent = i + 1 < lines.length ? lines[++i].trim() : '';
                     messages.push({
                         index: parts[0].replace('+CMGL: ', ''),
-                        status: parts[1].replace(/"/g, ''),
-                        sender: parts[2].replace(/"/g, ''),
-                        content: i + 1 < lines.length ? lines[++i].trim() : ''
+                        status: this.decodeUCS2(parts[1].replace(/"/g, '').trim()),
+                        sender: this.decodeUCS2(parts[2].replace(/"/g, '').trim()),
+                        content: this.decodeUCS2(rawContent)
                     });
                 }
             }
@@ -393,8 +396,29 @@ class SIM7600 {
             simReady: cpin.includes('READY'),
             signal: csqMatch ? parseInt(csqMatch[1]) : 0,
             signalPercent: csqMatch ? Math.round((parseInt(csqMatch[1]) / 31) * 100) : 0,
-            operator: copsMatch ? copsMatch[1] : 'Unknown'
+            operator: copsMatch ? this.decodeUCS2(copsMatch[1]) : 'Unknown'
         };
+    }
+
+    // ── UCS2 encoding helpers ───────────────────────────────────
+
+    /** Encode JS string → UCS2 hex (UTF-16BE, 4 hex digits per char) */
+    encodeUCS2(str) {
+        let hex = '';
+        for (let i = 0; i < str.length; i++) {
+            hex += str.charCodeAt(i).toString(16).padStart(4, '0').toUpperCase();
+        }
+        return hex;
+    }
+
+    /** Decode UCS2 hex → JS string. Returns original if not valid UCS2 hex. */
+    decodeUCS2(hex) {
+        if (!hex || hex.length < 4 || hex.length % 4 !== 0 || !/^[0-9A-Fa-f]+$/.test(hex)) return hex;
+        let str = '';
+        for (let i = 0; i < hex.length; i += 4) {
+            str += String.fromCharCode(parseInt(hex.substr(i, 4), 16));
+        }
+        return str;
     }
 
     // ── helpers ─────────────────────────────────────────────────
