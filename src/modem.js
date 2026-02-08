@@ -67,6 +67,8 @@ class SIM7600 {
         await this.sendCommand('ATE0');
         await this.sendCommand('AT+CMGF=1');
         await this.sendCommand('AT+CSCS="UCS2"');
+        // CSMP: fo=17, vp=167(24h), pid=0, dcs=8(UCS2 over-the-air)
+        await this.sendCommand('AT+CSMP=17,167,0,8');
         // CNMI=2,1: store SMS on SIM, deliver +CMTI notification only.
         // This avoids multi-line +CMT URCs that have no end-of-message delimiter.
         await this.sendCommand('AT+CNMI=2,1,0,0,0');
