@@ -7,5 +7,5 @@ originRequest:
 
 ingress:
   - hostname: sms.backvision.net
-    service: http://sms-api:3000
+    service: http://host.docker.internal:3000
   - service: http_status:404

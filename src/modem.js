@@ -162,7 +162,7 @@ class SIM7600 {
                 }
                 // Adaptive throttle: 1 ms while active or awaiting response,
                 // backs off to 10 ms after 50 consecutive zero-length packets
-                // to reduce idle CPU / bridge load.
+                // to reduce idle CPU load.
                 const delay = (this.pendingCommand || this.consecutiveZlp < 50) ? 1 : 10;
                 if (this.connected) setTimeout(read, delay);
             });
@@ -260,8 +260,8 @@ class SIM7600 {
     }
 
     /**
-     * After an AT timeout, fire a lightweight probe to distinguish
-     * "modem busy" from "bridge dead".  Two consecutive probe failures
+     * After an AT timeout, fire a lightweight probe to check if the
+     * modem is still responsive.  Two consecutive probe failures
      * trigger disconnect + reconnect.
      */
     _probeConnectivity() {
@@ -274,7 +274,7 @@ class SIM7600 {
             this._probeFailures++;
             console.warn(`⚠️ Connectivity probe failed (${this._probeFailures}/2)`);
             if (this._probeFailures >= 2) {
-                console.error('❌ Bridge appears dead – forcing reconnect');
+                console.error('❌ Modem appears dead – forcing reconnect');
                 this._probeFailures = 0;
                 this.disconnect();
                 this.scheduleReconnect();

@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  SMS API Watchdog for SIM7600G-H (native macOS USB)
+  ───────────────────────────────────────────────────
+  Keeps sms-api (node) + cloudflared (Docker) running:
+    - Restarts node server.js if process dies
+    - Restarts cloudflared container if it stops
+    - Checks /health endpoint for modemConnected
+
+  Install:  scripts/install-watchdog.sh
+  Remove:   scripts/install-watchdog.sh --remove
+  Logs:     tail -f /tmp/sms-watchdog.log
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>net.backvision.sms-watchdog</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>-c</string>
+    <string>exec bash SMS_WATCHDOG_PATH</string>
+  </array>
+
+  <!-- Start at login / load -->
+  <key>RunAtLoad</key>
+  <true/>
+
+  <!-- Restart if the watchdog itself crashes -->
+  <key>KeepAlive</key>
+  <true/>
+
+  <!-- Don't restart more than once per 10 seconds -->
+  <key>ThrottleInterval</key>
+  <integer>10</integer>
+
+  <!-- Log stdout/stderr -->
+  <key>StandardOutPath</key>
+  <string>/tmp/sms-watchdog-launchd.log</string>
+  <key>StandardErrorPath</key>
+  <string>/tmp/sms-watchdog-launchd.log</string>
+
+  <!-- Inherit user PATH so node, docker, lsof are found -->
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/Users/lucas/.nvm/versions/node/v22.21.1/bin:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>SMS_API_ROOT</key>
+    <string>SMS_API_ROOT_PLACEHOLDER</string>
+  </dict>
+</dict>
+</plist>
