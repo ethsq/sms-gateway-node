@@ -6,6 +6,7 @@
 # Usage:
 #   ./install-watchdog.sh          # install & start
 #   ./install-watchdog.sh --remove # unload & remove
+#   ./install-watchdog.sh          # rerun after code/config updates
 # ------------------------------------------------------------------
 set -euo pipefail
 
@@ -66,6 +67,7 @@ log "Watchdog script → $WATCHDOG_SH"
 launchctl load "$PLIST_DST"
 log "✅ Loaded $LABEL"
 log ""
+log "  Update:  git pull && npm ci && $0"
 log "  Status:  launchctl list | grep sms-watchdog"
 log "  Logs:    tail -f /tmp/sms-watchdog.log"
 log "  Remove:  $0 --remove"

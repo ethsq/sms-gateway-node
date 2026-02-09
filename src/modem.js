@@ -1,4 +1,9 @@
 const usb = require('usb');
+const {
+    InboundConcatAssembler,
+    parseCmgrPduResponse,
+    parseCmglPduResponse
+} = require('./inboundSms');
 
 // SIM7600G-H USB configuration
 const VID = 0x1e0e;
@@ -26,6 +31,14 @@ class SIM7600 {
         this.processingIndices = new Set(); // dedup in-flight CMTI
         this._probeInFlight = false;
         this._probeFailures = 0;
+        this.smsMode = null;
+        this.inboundAssembler = new InboundConcatAssembler({
+            ttlMs: parseInt(process.env.INBOUND_CONCAT_TTL_MS || '120000', 10)
+        });
+        this.concatFlushTimer = setInterval(() => this.flushExpiredInboundSegments(), 5000);
+        if (typeof this.concatFlushTimer.unref === 'function') {
+            this.concatFlushTimer.unref();
+        }
     }
 
     // ── lifecycle ────────────────────────────────────────────────
@@ -42,6 +55,7 @@ class SIM7600 {
             this.reconnectTimer = null;
         }
         this.reconnecting = false;
+        this.smsMode = null;
 
         this.device = usb.findByIds(VID, PID);
         if (!this.device) throw new Error('SIM7600G-H not found');
@@ -68,10 +82,7 @@ class SIM7600 {
 
         await this.sendCommand('AT');
         await this.sendCommand('ATE0');
-        await this.sendCommand('AT+CMGF=1');
-        await this.sendCommand('AT+CSCS="UCS2"');
-        // CSMP: fo=17, vp=167(24h), pid=0, dcs=8(UCS2 over-the-air)
-        await this.sendCommand('AT+CSMP=17,167,0,8');
+        await this.ensureSmsMode('text');
         // CNMI=2,1: store SMS on SIM, deliver +CMTI notification only.
         // This avoids multi-line +CMT URCs that have no end-of-message delimiter.
         await this.sendCommand('AT+CNMI=2,1,0,0,0');
@@ -94,6 +105,7 @@ class SIM7600 {
         this.commandQueue = [];
         this.processing = false;
         this.responseBuffer = '';
+        this.smsMode = null;
         try {
             if (this.interface) this.interface.release(true, () => {});
             if (this.device) this.device.close();
@@ -308,41 +320,54 @@ class SIM7600 {
 
     // ── SMS operations ──────────────────────────────────────────
 
+    async ensureSmsMode(mode) {
+        if (mode !== 'text' && mode !== 'pdu') {
+            throw new Error(`Unknown SMS mode: ${mode}`);
+        }
+        if (this.smsMode === mode) return;
+
+        if (mode === 'pdu') {
+            await this.sendCommand('AT+CMGF=0', 5000);
+            this.smsMode = 'pdu';
+            return;
+        }
+
+        await this.sendCommand('AT+CMGF=1', 5000);
+        await this.sendCommand('AT+CSCS="UCS2"', 5000);
+        // CSMP: fo=17, vp=167(24h), pid=0, dcs=8(UCS2 over-the-air)
+        await this.sendCommand('AT+CSMP=17,167,0,8', 5000);
+        this.smsMode = 'text';
+    }
+
+    flushExpiredInboundSegments() {
+        const expiredMessages = this.inboundAssembler.flushExpired();
+        for (const sms of expiredMessages) {
+            console.warn(
+                `⚠️ Incomplete multipart SMS expired: sender=${sms.sender} parts=${sms.receivedParts?.length || 0}/${sms.totalParts}`
+            );
+            this.notify({ type: 'new_sms', timestamp: new Date().toISOString(), sms });
+        }
+    }
+
     async readAndDeleteSMS(index) {
-        const sms = await this.readSingleSMS(index);
+        const fragment = await this.readSingleSMS(index);
+        if (!fragment) return;
+
+        const sms = this.inboundAssembler.push(fragment);
+        await this.sendCommand(`AT+CMGD=${index}`, 5000);
         if (sms) {
             this.notify({ type: 'new_sms', timestamp: new Date().toISOString(), sms });
-            await this.sendCommand(`AT+CMGD=${index}`, 5000);
         }
     }
 
     async readSingleSMS(index) {
+        await this.ensureSmsMode('pdu');
         const response = await this.sendCommand(`AT+CMGR=${index}`, 5000);
-        const lines = response.split('\n');
-        for (let i = 0; i < lines.length; i++) {
-            const line = lines[i].trim();
-            if (line.startsWith('+CMGR:')) {
-                const parts = line.split(',');
-                const bodyLines = [];
-                for (let j = i + 1; j < lines.length; j++) {
-                    const bl = lines[j].trim();
-                    if (bl === 'OK' || bl === '') continue;
-                    bodyLines.push(bl);
-                }
-                const rawStatus = parts[0].replace('+CMGR: ', '').replace(/"/g, '').trim();
-                const rawSender = parts.length >= 2 ? parts[1].replace(/"/g, '').trim() : '';
-                return {
-                    index,
-                    status: this.decodeUCS2(rawStatus),
-                    sender: this.decodeUCS2(rawSender) || 'Unknown',
-                    content: this.decodeUCS2(bodyLines.join(''))
-                };
-            }
-        }
-        return null;
+        return parseCmgrPduResponse(index, response);
     }
 
     async sendSMS(phone, message) {
+        await this.ensureSmsMode('text');
         while (this.pendingCommand || this.processing || this.commandQueue.length > 0) {
             await this.sleep(50);
         }
@@ -427,24 +452,16 @@ class SIM7600 {
     }
 
     async readSMS() {
-        const response = await this.sendCommand(`AT+CMGL="${this.encodeUCS2('ALL')}"`, 10000);
+        await this.ensureSmsMode('pdu');
+        const response = await this.sendCommand('AT+CMGL=4', 10000);
+        const fragments = parseCmglPduResponse(response);
+        const assembler = new InboundConcatAssembler({ ttlMs: 1 });
         const messages = [];
-        const lines = response.split('\n');
-        for (let i = 0; i < lines.length; i++) {
-            const line = lines[i].trim();
-            if (line.startsWith('+CMGL:')) {
-                const parts = line.split(',');
-                if (parts.length >= 3) {
-                    const rawContent = i + 1 < lines.length ? lines[++i].trim() : '';
-                    messages.push({
-                        index: parts[0].replace('+CMGL: ', ''),
-                        status: this.decodeUCS2(parts[1].replace(/"/g, '').trim()),
-                        sender: this.decodeUCS2(parts[2].replace(/"/g, '').trim()),
-                        content: this.decodeUCS2(rawContent)
-                    });
-                }
-            }
+        for (const fragment of fragments) {
+            const sms = assembler.push(fragment, Date.now());
+            if (sms) messages.push(sms);
         }
+        messages.push(...assembler.flushExpired(Number.MAX_SAFE_INTEGER));
         return messages;
     }
 

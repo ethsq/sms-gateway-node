@@ -4,7 +4,8 @@
     "description": "SMS API Server for SIM7600G-H modem",
     "main": "server.js",
     "scripts": {
-        "start": "node server.js"
+        "start": "node server.js",
+        "test": "node --test src/*.test.js"
     },
     "dependencies": {
         "dotenv": "^17.2.4",

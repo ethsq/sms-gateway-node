@@ -46,3 +46,11 @@ These patches are applied automatically by `scripts/build-usbip-host.sh`.
 ```json
 {"status":"ok","modemConnected":true}
 ```
+
+## Watchdog operations
+
+`sms-api` runs with a macOS LaunchAgent watchdog.
+
+- Runbook: `WATCHDOG_RUNBOOK.md`
+- Install/Reinstall: `./scripts/install-watchdog.sh`
+- Remove: `./scripts/install-watchdog.sh --remove`
